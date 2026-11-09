@@ -1,209 +1,149 @@
 # Claude Stats
 
-A [DMS (Dank Material Shell)](https://github.com/AvengeMedia/DankMaterialShell) plugin that monitors your Claude Code subscription usage directly from the taskbar.
+A DMS bar widget for Claude Code. It shows your subscription's rate limits, token use and
+estimated cost, and tells you live when Claude is working or waiting for your answer.
 
-![Screenshot](screenshot.png)
+Based on [dms-claudecode](https://github.com/titeya/dms-claudecode) by Nicolas Bellamy, with a
+Material 3 redesign, layout options and live session activity. It has its own plugin id
+(`claudeStats`), so it can be installed next to the original.
 
 ## Features
 
-- **Taskbar pill** with circular progress ring showing 5-hour rate limit utilization
-- **Detailed popout** with:
-  - 5-hour and 7-day rate window utilization with countdown timers
-  - Pacing indicator showing whether you're over or under a linear burn rate for each window (e.g. "6% over pace", "25% under pace")
-  - Token consumption breakdown (today, calendar week, calendar month)
-  - Estimated API cost per period (today, calendar week, calendar month) with automatic pricing from [LiteLLM](https://github.com/BerriAI/litellm)
-  - Weekly activity bar chart (Monday–Sunday) with interactive hover tooltips (token count + cost)
-  - Per-model token usage for the current calendar week with dynamic model family detection
-  - All-time session and message statistics
-- **Profile breakdown** — per-profile token/cost stats with a hybrid profile selector (tabs for up to 4 profiles, dropdown for more). Profiles are discovered automatically from:
-  - `~/.claude` (the `default` profile)
-  - [CCS](https://github.com/kaitranntt/ccs) instances in `~/.ccs/instances/`
-  - [claude-code-profiles](https://github.com/felipeadeildo/claude-code-profiles) profiles in `~/.ccp/profiles/*.env` (the `CLAUDE_CONFIG_DIR` declared in each `.env` is used)
-  - Any directory you add manually under **Custom Profiles** in the plugin settings
-  - Profile overlay on the daily activity chart: grey bars show total usage, colored bars show the selected profile's share
-  - Tooltip shows both total and per-profile token counts when a profile is selected
-- **Automatic subscription detection** via the Anthropic OAuth API
-- **Dynamic model pricing** — new Anthropic model families are detected automatically, no code changes needed
-- **Currency support** — costs displayed in EUR for French locale, USD otherwise (exchange rate from ECB via [Frankfurter](https://www.frankfurter.app/))
-- **Configurable refresh interval** (2 to 15 minutes)
-- **Localization support** (English and French)
+- **Bar icon** with the 5-hour rate limit as a ring, in one of four styles:
+  ring and percentage, ring only, nested 5-hour and 7-day rings, or percentages only.
+- **Live activity** from Claude Code hooks: a sweep circles the ring while Claude works, and a
+  red dot pulses when it asks a question, wants a plan approved, or needs a permission.
+- **Popout** built from the shell's Material widgets:
+  - Active sessions by project folder: working, needs your input, or done
+  - 5-hour and 7-day rate windows with reset countdown and pace ("6% over pace")
+  - Tokens and estimated cost for today, this week and this month
+  - Daily activity chart for the week; hover a day for its tokens and cost
+  - Models used this week as a share bar
+  - Refresh and settings buttons in the header
+- **Two layouts**: *Compact*, or *Detailed* at the same size with more numbers: reset clock
+  times, projected usage at reset, daily averages, per-day totals, model shares and all-time stats.
+- **Profiles**: per-profile stats with filter chips. Detected from `~/.claude`,
+  [CCS](https://github.com/kaitranntt/ccs) instances in `~/.ccs/instances/`,
+  [claude-code-profiles](https://github.com/felipeadeildo/claude-code-profiles) in `~/.ccp/profiles/*.env`,
+  and any directory you add under **Custom Profiles**.
+- **Pricing** from [LiteLLM](https://github.com/BerriAI/litellm), so new model families need no code
+  change. Costs are in EUR for French, USD otherwise (rate from the ECB via [Frankfurter](https://www.frankfurter.app/)).
+- English, French and Spanish.
 
 ## Requirements
 
-- [DMS Shell](https://github.com/AvengeMedia/DankMaterialShell)
-- [jq](https://jqlang.github.io/jq/) (JSON processor)
-- An active [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installation with OAuth credentials
+- DMS shell
+- `jq`, `curl` and `flock` (util-linux)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) signed in through the CLI
 
 ## Installation
 
-A local fork of [dms-claudecode](https://github.com/titeya/dms-claudecode) with its own
-plugin id (`claudeStats`), so it can be installed next to the original.
+Link the plugin into your DMS plugins directory, then restart DMS and enable **Claude Stats**
+in Settings > Plugins:
 
 ```bash
-cp -r quickshell/dms-plugins/claude-stats ~/.config/DankMaterialShell/plugins/claudeStats
+ln -s "$PWD/quickshell/dms-plugins/claude-stats" ~/.config/DankMaterialShell/plugins/claude-stats
 ```
 
-Then restart DMS.
+### Live activity hooks
 
-## Configuration
+Live activity needs `claude-activity-hook` registered in `~/.claude/settings.json`. Add this
+block, merging it with any `hooks` you already have, then start a new Claude Code session:
 
-Open DMS Settings (`Mod + ,` > Plugins > Claude Stats) to adjust the refresh interval,
-toggle pacing indicators, and register custom profiles.
+```json
+"hooks": {
+  "SessionStart":      [{ "hooks": [{ "type": "command", "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook" }] }],
+  "UserPromptSubmit":  [{ "hooks": [{ "type": "command", "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook" }] }],
+  "PreToolUse":        [{ "hooks": [{ "type": "command", "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook" }] }],
+  "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook" }] }],
+  "PostToolUse":       [{ "hooks": [{ "type": "command", "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook" }] }],
+  "Notification":      [{ "hooks": [{ "type": "command", "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook" }] }],
+  "Stop":              [{ "hooks": [{ "type": "command", "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook" }] }],
+  "SessionEnd":        [{ "hooks": [{ "type": "command", "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook" }] }]
+}
+```
 
-- **Bar style**: ring and percentage, ring only, 5-hour and 7-day rings, or percentages only.
-- **Popout layout**: *Compact* shows rate limits, tokens, daily activity and models. *Detailed*
-  keeps the same size and adds reset times, projected usage at reset, daily averages,
-  per-day totals, model shares, weekly sessions and all-time stats.
-
-### Live activity
-
-The bar icon shows what Claude Code is doing right now:
+Adjust the path if the plugin lives elsewhere, and repeat for each `CLAUDE_CONFIG_DIR` profile
+you use. To check it works, send a prompt and run `cat $XDG_RUNTIME_DIR/claude-stats.json`: your
+session should show as `working`.
 
 | Bar icon | Meaning |
 |----------|---------|
 | A sweep circling the ring | Claude is working |
-| Pulsing red dot after the percentage, red percentage | Claude is waiting for you: a question, a plan to approve, or a permission prompt |
-| Plain ring | Claude is idle or finished; the popout lists finished sessions as Done |
+| Pulsing red dot after a red percentage | Claude is waiting for you: a question, a plan to approve, or a permission prompt |
+| Plain ring | Idle or finished; the popout lists finished sessions as Done |
 
-The popout lists each session by project folder. This needs `claude-activity-hook` registered
-for these hook events in `~/.claude/settings.json` (merge with any `hooks` you already have,
-and repeat for each `CLAUDE_CONFIG_DIR` profile you use). Adjust the path if the plugin is installed elsewhere:
+In the percentages-only style, a pulsing dot stands in for the sweep.
 
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
-          }
-        ]
-      }
-    ],
-    "PermissionRequest": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
-          }
-        ]
-      }
-    ],
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+## Configuration
 
-The hook writes `$XDG_RUNTIME_DIR/claude-stats.json` and only rewrites it when a session changes
-state. The widget watches that file, so nothing polls while Claude is idle. Interrupting Claude
-with Esc sends no hook event, so the session shows as working until your next prompt.
+Settings > Plugins > Claude Stats, or the gear button in the popout:
 
-### Custom Profiles
+| Setting | Options |
+|---------|---------|
+| Refresh interval | 2 to 15 minutes |
+| Show pacing | Pace labels and the pace tick on the rings |
+| Show Claude activity | Live activity in the bar and popout |
+| Bar style | Ring and percentage, ring only, 5-hour and 7-day rings, percentages only |
+| Popout layout | Compact or Detailed |
+| Custom Profiles | Extra Claude config directories to track |
 
-If you use a profile manager the plugin doesn't detect automatically, add it under
-**Custom Profiles** with a name and a config directory path:
+### Custom profiles
+
+Add a name and a `CLAUDE_CONFIG_DIR`, the folder that contains `projects/` (what `~/.claude` is
+for the default profile):
 
 | Name | Config directory |
 |------|------------------|
 | `work` | `~/.ccp/data/work` |
 
-The path is a `CLAUDE_CONFIG_DIR` — the folder that contains `projects/`, i.e. whatever
-`~/.claude` is for the default profile. The plugin reads usage from `<path>/projects/`
-and, when present, `<path>/.credentials.json` so rate limits are tracked per profile too.
+The plugin reads usage from `<path>/projects/` and, when present, rate limits through
+`<path>/.credentials.json`. Entries without a `projects/` folder are ignored, and a name already
+taken by a detected profile is skipped.
 
-Entries whose `projects/` folder doesn't exist are ignored, and a name already claimed by
-an auto-detected profile is skipped.
+## How it works
 
-## How It Works
+**Usage** comes from `get-claude-usage`, run at the refresh interval or from the refresh button:
 
-The plugin runs a lightweight bash script at the configured interval that:
+1. Reads the OAuth token from `<config dir>/.credentials.json`
+2. Asks the Anthropic usage API for the rate limit windows, cached for 2 minutes in `~/.claude/usage-cache.json`
+3. Scans `<config dir>/projects/` of every profile, in parallel, for tokens, sessions and models
+4. Fetches model pricing and the USD/EUR rate once a day, cached in `~/.claude/pricing-cache.json`
 
-1. Reads your OAuth token from `~/.claude/.credentials.json`
-2. Queries the Anthropic usage API for current rate limit status
-3. Scans `<config dir>/projects/` for every discovered profile (see above) for token consumption statistics — each profile is processed in parallel
-4. Fetches model pricing from LiteLLM and USD/EUR exchange rate from ECB (cached daily in `~/.claude/pricing-cache.json`)
+The cache is shared with the original plugin when both are installed.
 
-API usage responses are cached for 2 minutes (`~/.claude/usage-cache.json`) to avoid rate limiting, with stale fallback on errors.
+**Live activity** comes from `claude-activity-hook`. Claude Code runs it on each hook event, and it
+records each session's state in `$XDG_RUNTIME_DIR/claude-stats.json`, writing only when a state
+changes. The widget watches that file, so nothing polls while Claude is idle. Sessions whose
+Claude process has exited are dropped within a minute.
+
+Pressing Esc to interrupt Claude sends no hook event, so that session shows as working until
+your next prompt.
 
 ### Sign-in status
 
-Rate limits (the 5-hour and 7-day windows) come from the Anthropic API using the OAuth token in `<config dir>/.credentials.json`, which is the Claude Code **CLI** login. The plugin only reads that file. It never writes or refreshes it, so the token is renewed whenever the CLI runs.
-
-When that data can't be trusted, the popout shows a notice above the rate windows, dims the rings and the taskbar pill, and hides the pacing and countdown. The last known values are still shown, marked as old:
+Rate limits use the Claude Code **CLI** login. The plugin only reads the credentials file and
+never refreshes the token; the CLI renews it whenever it runs. When the rate limit data can't be
+trusted, the popout shows a notice, dims the rings and the bar icon, and keeps the last known values:
 
 | Notice | Meaning |
 |--------|---------|
 | No Claude Code CLI login found | The profile has no `.credentials.json`. Run `claude /login`. |
-| Claude Code login expired | The API rejected the token, or it is past its expiry. Run `claude` once to refresh it. |
+| Claude Code login expired | The token was rejected or is past its expiry. Run `claude` once to refresh it. |
 | The usage API is rate limiting requests | The API answered HTTP 429. It recovers on its own. |
 | Could not reach the usage API | Network error or an unexpected response. |
 
-Token, cost and model statistics are read from the local session logs and keep working in every case. If you only use the Claude desktop app and never the CLI, there is no CLI login, so the rate-limit windows show the "No Claude Code CLI login found" notice until you sign in once with `claude /login`.
+Tokens, costs and models come from local session logs and keep working in every case.
 
-All data stays local. Network requests are limited to the official Anthropic API (usage), GitHub (LiteLLM pricing, once/day), and Frankfurter (exchange rate, once/day).
+All data stays on your machine. Network requests go only to the Anthropic usage API, GitHub
+(LiteLLM pricing, once a day) and Frankfurter (exchange rate, once a day).
+
+## Tests
+
+```bash
+for t in tests/test-*.sh; do bash "$t"; done
+```
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Original work © Nicolas Bellamy.

@@ -1,9 +1,9 @@
 {
   "id": "claudeStats",
   "name": "Claude Stats",
-  "description": "Monitor your Claude Code subscription usage with token tracking, estimated API costs, rate limits, and daily activity charts",
-  "version": "1.3.6",
-  "author": "Nicolas Bellamy",
+  "description": "Claude Code usage in your bar: rate limits with pacing, tokens and estimated costs, daily activity, and a live indicator for when Claude is working or waiting for you",
+  "version": "2.0.0",
+  "author": "Arif Sardar",
   "icon": "monitoring",
   "type": "widget",
   "capabilities": [
@@ -13,7 +13,8 @@
   "settings": "./ClaudeStatsSettings.qml",
   "requires": [
     "jq",
-    "curl"
+    "curl",
+    "flock"
   ],
   "permissions": [
     "settings_read",
