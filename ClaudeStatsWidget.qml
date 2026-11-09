@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Common
+import qs.DCommon.Common as DC
 import qs.Services
 import qs.DCommon.Widgets
 import qs.Modules.Plugins
@@ -32,6 +33,15 @@ PluginComponent {
     // ring | ringOnly | dual | text
     property string pillStyle: pluginData.pillStyle || "ring"
     readonly property bool compact: (pluginData.popoutLayout || "compact") === "compact"
+    property bool showActivity: pluginData.showActivity !== false
+
+    // Live session state written by claude-activity-hook: [{ id, state, project }], most urgent first
+    property var activitySessions: []
+    // asking | working | done | idle
+    readonly property string activityState: showActivity && activitySessions.length > 0 ? activitySessions[0].state : "idle"
+    readonly property bool activityBusy: activityState === "asking" || activityState === "working"
+    // 0 when animations are off, so infinite loops never spin with no duration
+    readonly property int activityPulseDuration: DC.Style.reduceMotion ? 0 : Theme.extraLongDuration * 2
     property bool customProfilesRefreshPending: false
 
     // API usage data
@@ -203,13 +213,17 @@ PluginComponent {
             if (elapsed > 120000 && !usageProcess.running) {
                 usageProcess.running = true;
             }
+            // A crashed claude never sends SessionEnd
+            if (root.activityBusy && !pruneProcess.running)
+                pruneProcess.running = true;
         }
     }
 
     // Script path via PluginService
     property string scriptPath: PluginService.getPluginPath("claudeStats") + "/get-claude-usage"
+    readonly property string activityHookPath: PluginService.getPluginPath("claudeStats") + "/claude-activity-hook"
 
-    popoutWidth: compact ? 380 : 420
+    popoutWidth: 400
 
     // --- Helpers ---
 
@@ -235,6 +249,23 @@ PluginComponent {
         if (pct > 50)
             return Theme.warning;
         return base || Theme.primary;
+    }
+
+    // Local wall-clock time of a reset; the 7-day window also names the weekday
+    function resetClock(iso, withDay) {
+        if (!iso || !displayAuthOk)
+            return "";
+        var d = new Date(iso);
+        if (isNaN(d.getTime()))
+            return "";
+        return d.toLocaleString(Qt.locale(), withDay ? "ddd HH:mm" : "HH:mm");
+    }
+
+    // Usage at reset if the current rate holds; "" too early in the window to mean anything
+    function projectedLabel(util, pace) {
+        if (!pace || pace.status === "unknown" || pace.timeFrac < 0.1)
+            return "";
+        return tr("Projected") + " " + Math.round(util / pace.timeFrac) + "%";
     }
 
     function modelColor(index) {
@@ -328,6 +359,42 @@ PluginComponent {
         default:
             return "";
         }
+    }
+
+    function parseActivity(text) {
+        var data;
+        try {
+            data = JSON.parse(text || "{}");
+        } catch (e) {
+            return;
+        }
+        var sessions = data.sessions || {};
+        var rank = {
+            asking: 0,
+            working: 1,
+            done: 2
+        };
+        activitySessions = Object.keys(sessions).filter(id => rank[sessions[id].state] !== undefined).map(id => ({
+                    id: id,
+                    state: sessions[id].state,
+                    project: (sessions[id].cwd || "").split("/").filter(part => part !== "").pop() || "~"
+                })).sort((a, b) => rank[a.state] - rank[b.state]);
+    }
+
+    function activityLabel(state) {
+        if (state === "asking")
+            return tr("Needs your input");
+        if (state === "working")
+            return tr("Working");
+        return tr("Done");
+    }
+
+    function activityIcon(state) {
+        if (state === "asking")
+            return "help";
+        if (state === "working")
+            return "progress_activity";
+        return "check_circle";
     }
 
     function formatCost(usd) {
@@ -718,6 +785,27 @@ PluginComponent {
         }
     }
 
+    FileView {
+        id: activityFile
+        path: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/claude-stats.json"
+        blockLoading: false
+        watchChanges: true
+        printErrors: false
+        onFileChanged: reload()
+        onLoaded: root.parseActivity(text())
+        // The watch needs the file to exist before the first hook runs
+        onLoadFailed: error => {
+            if (error === FileViewError.FileNotFound)
+                setText("{}\n");
+        }
+    }
+
+    Process {
+        id: pruneProcess
+        command: ["timeout", "10", "bash", root.activityHookPath, "prune"]
+        running: false
+    }
+
     Timer {
         interval: root.refreshInterval
         running: true
@@ -742,9 +830,12 @@ PluginComponent {
         value: Math.min(Math.max(percent, 0), 100) / 100
         ringColor: root.progressColor(percent, baseColor)
 
-        // Linear-burn position: where usage would be at a steady rate
+        // Linear-burn position: where usage would be at a steady rate.
+        // Children land in DRingGauge's inner circle, so size back out to the full ring.
         Item {
-            anchors.fill: parent
+            anchors.centerIn: parent
+            width: ring.width
+            height: ring.height
             visible: root.showPacing && ring.pace !== null && ring.pace.status !== "unknown"
             rotation: ring.pace ? Math.min(Math.max(ring.pace.timeFrac, 0), 1) * ring.spanAngle : 0
 
@@ -755,6 +846,42 @@ PluginComponent {
                 height: ring.strokeWidth + Theme.spacingXXS * 2
                 radius: width / 2
                 color: Theme.surfaceText
+            }
+        }
+    }
+
+    // Pulsing dot: asking (error), or working when there is no ring to spin.
+    // Sits beside the ring, not on it, so it never merges with the usage arc.
+    component ActivityDot: Rectangle {
+        id: dot
+
+        visible: root.activityState === "asking" || (root.pillStyle === "text" && root.activityState === "working")
+        width: Theme.spacingS
+        height: width
+        radius: width / 2
+        color: root.activityState === "asking" ? Theme.error : Theme.primary
+
+        SequentialAnimation {
+            running: dot.visible && root.activityPulseDuration > 0
+            loops: Animation.Infinite
+            onRunningChanged: {
+                if (!running)
+                    dot.opacity = 1;
+            }
+
+            OpacityAnimator {
+                target: dot
+                from: 1
+                to: 0.25
+                duration: root.activityPulseDuration / 2
+                easing.type: Easing.InOutSine
+            }
+            OpacityAnimator {
+                target: dot
+                from: 0.25
+                to: 1
+                duration: root.activityPulseDuration / 2
+                easing.type: Easing.InOutSine
             }
         }
     }
@@ -783,6 +910,31 @@ PluginComponent {
             percent: root.sevenDayUtil
             baseColor: Theme.tertiary
         }
+
+        // Comet sweeping around the ring while Claude works
+        DRingGauge {
+            id: spinner
+            anchors.fill: parent
+            visible: root.activityState === "working"
+            value: 0.22
+            animated: false
+            strokeWidth: gauge.stroke
+            trackColor: "transparent"
+            ringColor: Theme.surfaceText
+
+            RotationAnimator {
+                target: spinner
+                from: 0
+                to: 360
+                duration: root.activityPulseDuration
+                loops: Animation.Infinite
+                running: spinner.visible && root.activityPulseDuration > 0
+                onRunningChanged: {
+                    if (!running)
+                        spinner.rotation = 0;
+                }
+            }
+        }
     }
 
     component PillLabel: StyledText {
@@ -798,7 +950,7 @@ PluginComponent {
         }
         horizontalAlignment: Text.AlignHCenter
         font.pixelSize: Theme.barTextSize(root.barThickness, root.barConfig?.fontScale, root.barConfig?.maximizeWidgetText)
-        color: root.pillOverPace ? root.paceColor(root.pillFivePace.status) : Theme.surfaceText
+        color: root.activityState === "asking" ? Theme.error : root.pillOverPace ? root.paceColor(root.pillFivePace.status) : Theme.surfaceText
     }
 
     component RateWindow: Row {
@@ -809,16 +961,15 @@ PluginComponent {
         property var pace: null
         property string countdown: ""
         property color baseColor: Theme.primary
-        property string extra: ""
+        property var extra: []
 
         spacing: Theme.spacingM
 
         UsageRing {
             id: rateRing
-            width: root.compact ? Theme.buttonHeightM : Theme.buttonHeightM + Theme.spacingXL
+            width: Theme.buttonHeightM
             height: width
-            anchors.verticalCenter: parent.verticalCenter
-            strokeWidth: root.compact ? Theme.spacingXS + Theme.spacingXXS : Theme.spacingS
+            strokeWidth: Theme.spacingXS + Theme.spacingXXS
             trackGap: Theme.spacingXXS
             percent: rate.percent
             pace: rate.pace
@@ -827,7 +978,7 @@ PluginComponent {
             StyledText {
                 anchors.centerIn: parent
                 text: Math.round(rate.percent) + "%"
-                font.pixelSize: root.compact ? Theme.fontSizeMedium : Theme.fontSizeXLarge
+                font.pixelSize: Theme.fontSizeMedium
                 font.weight: Theme.fontWeightBold
                 color: Theme.surfaceText
             }
@@ -835,7 +986,6 @@ PluginComponent {
 
         Column {
             width: Math.max(0, rate.width - rateRing.width - rate.spacing)
-            anchors.verticalCenter: parent.verticalCenter
             spacing: Theme.spacingXXS
 
             StyledText {
@@ -844,6 +994,7 @@ PluginComponent {
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Theme.fontWeightMedium
                 color: Theme.surfaceText
+                wrapMode: Text.NoWrap
                 elide: Text.ElideRight
             }
 
@@ -866,6 +1017,7 @@ PluginComponent {
                     text: rate.countdown
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.onSurfaceVariant
+                    wrapMode: Text.NoWrap
                     elide: Text.ElideRight
                 }
             }
@@ -876,16 +1028,21 @@ PluginComponent {
                 visible: root.showPacing && text !== ""
                 font.pixelSize: Theme.fontSizeSmall
                 color: root.paceColor(rate.pace ? rate.pace.status : "")
-                wrapMode: Text.WordWrap
+                wrapMode: Text.NoWrap
             }
 
-            StyledText {
-                width: parent.width
-                text: rate.extra
-                visible: text !== ""
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.onSurfaceVariant
-                wrapMode: Text.WordWrap
+            Repeater {
+                model: rate.extra
+
+                StyledText {
+                    required property string modelData
+
+                    width: parent.width
+                    text: modelData
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.onSurfaceVariant
+                    wrapMode: Text.NoWrap
+                }
             }
         }
     }
@@ -896,6 +1053,7 @@ PluginComponent {
         property string label: ""
         property real tokens: 0
         property real cost: 0
+        property string detail: ""
 
         height: tileColumn.implicitHeight + pad * 2
         restRadius: Theme.cornerRadiusL
@@ -910,15 +1068,17 @@ PluginComponent {
                 text: tile.label
                 font.pixelSize: Theme.fontSizeSmall
                 color: tile.mutedColor
+                wrapMode: Text.NoWrap
                 elide: Text.ElideRight
             }
 
             StyledText {
                 width: parent.width
                 text: root.formatTokens(tile.tokens)
-                font.pixelSize: root.compact ? Theme.fontSizeLarge : Theme.fontSizeXLarge
+                font.pixelSize: Theme.fontSizeLarge
                 font.weight: Theme.fontWeightBold
                 color: tile.contentColor
+                wrapMode: Text.NoWrap
                 elide: Text.ElideRight
             }
 
@@ -929,6 +1089,17 @@ PluginComponent {
                 opacity: tile.cost > 0 ? 1 : 0
                 font.pixelSize: Theme.fontSizeSmall
                 color: tile.mutedColor
+                wrapMode: Text.NoWrap
+                elide: Text.ElideRight
+            }
+
+            StyledText {
+                width: parent.width
+                text: tile.detail
+                visible: !root.compact
+                font.pixelSize: Theme.fontSizeSmall
+                color: tile.mutedColor
+                wrapMode: Text.NoWrap
                 elide: Text.ElideRight
             }
         }
@@ -948,6 +1119,10 @@ PluginComponent {
             PillLabel {
                 anchors.verticalCenter: parent.verticalCenter
             }
+
+            ActivityDot {
+                anchors.verticalCenter: parent.verticalCenter
+            }
         }
     }
 
@@ -964,6 +1139,10 @@ PluginComponent {
                 anchors.horizontalCenter: parent.horizontalCenter
                 stacked: true
             }
+
+            ActivityDot {
+                anchors.horizontalCenter: parent.horizontalCenter
+            }
         }
     }
 
@@ -971,10 +1150,34 @@ PluginComponent {
 
     popoutContent: Component {
         PopoutComponent {
+            id: popout
+
             headerText: root.tr("Claude Code Usage")
             detailsText: {
                 var label = root.formatSubscription(root.displaySubscriptionType, root.displayRateLimitTier);
                 return label ? root.tr("Subscription") + ": " + label : "";
+            }
+            headerActions: Component {
+                Row {
+                    spacing: Theme.spacingXXS
+
+                    DRefreshButton {
+                        busy: usageProcess.running
+                        tooltipText: root.tr("Refresh")
+                        onClicked: usageProcess.running = true
+                    }
+
+                    DActionButton {
+                        iconName: "settings"
+                        tooltipText: root.tr("Settings")
+                        Accessible.name: root.tr("Settings")
+                        onClicked: {
+                            PopoutService.openSettingsWithTab(SettingsTabs.pluginPrefix + "claudeStats");
+                            if (popout.closePopout)
+                                popout.closePopout();
+                        }
+                    }
+                }
             }
 
             Column {
@@ -1029,6 +1232,60 @@ PluginComponent {
                     }
                 }
 
+                // --- Live sessions ---
+                DCard {
+                    width: parent.width
+                    height: sessionColumn.implicitHeight + pad * 2
+                    restRadius: Theme.cornerRadiusL
+                    visible: root.activityState !== "idle"
+
+                    Column {
+                        id: sessionColumn
+                        width: parent.width
+                        spacing: Theme.spacingXS
+
+                        Repeater {
+                            model: root.activitySessions
+
+                            Row {
+                                id: sessionRow
+
+                                required property var modelData
+
+                                width: sessionColumn.width
+                                spacing: Theme.spacingS
+
+                                DIcon {
+                                    id: sessionIcon
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    name: root.activityIcon(sessionRow.modelData.state)
+                                    size: Theme.iconSizeSmall
+                                    color: sessionRow.modelData.state === "asking" ? Theme.error : Theme.primary
+                                }
+
+                                StyledText {
+                                    id: sessionProject
+                                    width: Math.min(implicitWidth, sessionRow.width - sessionIcon.width - sessionState.implicitWidth - sessionRow.spacing * 2)
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: sessionRow.modelData.project
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    font.weight: Theme.fontWeightMedium
+                                    color: Theme.surfaceText
+                                    elide: Text.ElideMiddle
+                                }
+
+                                StyledText {
+                                    id: sessionState
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: root.activityLabel(sessionRow.modelData.state)
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    color: sessionRow.modelData.state === "asking" ? Theme.error : Theme.onSurfaceVariant
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // --- Rate windows ---
                 DCard {
                     width: parent.width
@@ -1038,10 +1295,10 @@ PluginComponent {
                     Grid {
                         id: rateGrid
 
-                        readonly property real cellWidth: root.compact ? (width - columnSpacing) / 2 : width
+                        readonly property real cellWidth: (width - columnSpacing) / 2
 
                         width: parent.width
-                        columns: root.compact ? 2 : 1
+                        columns: 2
                         columnSpacing: Theme.spacingM
                         rowSpacing: Theme.spacingM
                         opacity: root.displayAuthOk ? 1 : 0.45
@@ -1052,6 +1309,18 @@ PluginComponent {
                             percent: root.displayFiveHourUtil
                             pace: root.fiveHourPace
                             countdown: root.displayFiveHourCountdown
+                            extra: {
+                                if (root.compact)
+                                    return [];
+                                var lines = [];
+                                var clock = root.resetClock(root.displayFiveHourReset, false);
+                                if (clock)
+                                    lines.push(root.tr("Resets") + " " + clock);
+                                var projected = root.projectedLabel(root.displayFiveHourUtil, root.fiveHourPace);
+                                if (projected)
+                                    lines.push(projected);
+                                return lines;
+                            }
                         }
 
                         RateWindow {
@@ -1063,13 +1332,15 @@ PluginComponent {
                             baseColor: Theme.tertiary
                             extra: {
                                 if (root.compact)
-                                    return "";
-                                var parts = [];
-                                if (root.displayWeekSessions > 0)
-                                    parts.push(root.displayWeekSessions + " " + root.tr("sessions"));
-                                if (root.displayWeekMessages > 0)
-                                    parts.push(root.displayWeekMessages + " " + root.tr("msgs"));
-                                return parts.join(" · ");
+                                    return [];
+                                var lines = [];
+                                var clock = root.resetClock(root.displaySevenDayReset, true);
+                                if (clock)
+                                    lines.push(root.tr("Resets") + " " + clock);
+                                var projected = root.projectedLabel(root.displaySevenDayUtil, root.sevenDayPace);
+                                if (projected)
+                                    lines.push(projected);
+                                return lines;
                             }
                         }
                     }
@@ -1090,6 +1361,7 @@ PluginComponent {
                         label: root.tr("Today")
                         tokens: root.displayDailyTokens[root.todayIndex]
                         cost: root.displayTodayCost
+                        detail: root.displayWeekTokens > 0 ? Math.round(tokens / root.displayWeekTokens * 100) + "% " + root.tr("of week") : ""
                     }
 
                     TokenTile {
@@ -1098,6 +1370,7 @@ PluginComponent {
                         label: root.tr("Week")
                         tokens: root.displayWeekTokens
                         cost: root.displayWeekCost
+                        detail: root.formatTokens(tokens / (root.todayIndex + 1)) + root.tr("/day")
                     }
 
                     TokenTile {
@@ -1106,6 +1379,10 @@ PluginComponent {
                         label: root.tr("Month")
                         tokens: root.displayMonthTokens
                         cost: root.displayMonthCost
+                        detail: {
+                            void (root.countdownNow);
+                            return root.formatTokens(tokens / new Date().getDate()) + root.tr("/day");
+                        }
                     }
                 }
 
@@ -1139,13 +1416,20 @@ PluginComponent {
                                 anchors.leftMargin: Theme.spacingS
                                 anchors.verticalCenter: parent.verticalCenter
                                 horizontalAlignment: Text.AlignRight
+                                wrapMode: Text.NoWrap
                                 elide: Text.ElideLeft
                                 font.pixelSize: Theme.fontSizeSmall
                                 color: Theme.onSurfaceVariant
                                 text: {
                                     var d = root.hoveredDay;
-                                    if (d < 0 || !(root.dailyTokens[d] > 0))
-                                        return "";
+                                    if (d < 0 || !(root.dailyTokens[d] > 0)) {
+                                        var week = [];
+                                        if (root.displayWeekSessions > 0)
+                                            week.push(root.displayWeekSessions + " " + root.tr("sessions"));
+                                        if (root.displayWeekMessages > 0)
+                                            week.push(root.displayWeekMessages + " " + root.tr("msgs"));
+                                        return week.join(" · ");
+                                    }
                                     var parts = [root.formatTokens(root.dailyTokens[d])];
                                     if (root.selectedProfile !== "all" && root.profileDailyTokens[d] > 0)
                                         parts.push(root.formatTokens(root.profileDailyTokens[d]) + " " + root.selectedProfile);
@@ -1157,9 +1441,31 @@ PluginComponent {
                         }
 
                         Row {
+                            width: parent.width
+                            spacing: chartRow.spacing
+                            visible: !root.compact
+
+                            Repeater {
+                                model: 7
+
+                                StyledText {
+                                    required property int index
+
+                                    width: (chartRow.width - chartRow.spacing * 6) / 7
+                                    horizontalAlignment: Text.AlignHCenter
+                                    text: root.dailyTokens[index] > 0 ? root.formatTokens(root.dailyTokens[index]) : ""
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    color: index === root.todayIndex ? Theme.primary : Theme.onSurfaceVariant
+                                    wrapMode: Text.NoWrap
+                                    elide: Text.ElideRight
+                                }
+                            }
+                        }
+
+                        Row {
                             id: chartRow
                             width: parent.width
-                            height: root.compact ? Theme.buttonHeightM : Theme.buttonHeightM + Theme.spacingXL
+                            height: Theme.buttonHeightM
                             spacing: Theme.spacingXS
 
                             Repeater {
@@ -1214,7 +1520,7 @@ PluginComponent {
                                         anchors.bottom: parent.bottom
                                         anchors.horizontalCenter: parent.horizontalCenter
                                         text: root.dayLabels[day.index]
-                                        font.pixelSize: Theme.fontSizeXSmall
+                                        font.pixelSize: Theme.fontSizeSmall
                                         font.weight: day.isToday ? Theme.fontWeightBold : Theme.fontWeight
                                         color: day.isToday || day.highlighted ? Theme.primary : Theme.onSurfaceVariant
                                     }
@@ -1303,7 +1609,7 @@ PluginComponent {
 
                                     StyledText {
                                         anchors.verticalCenter: parent.verticalCenter
-                                        text: root.formatTokens(modelData.modelTokens)
+                                        text: root.formatTokens(modelData.modelTokens) + (root.compact ? "" : " · " + Math.round(modelData.modelTokens / root.displayModelTotal * 100) + "%")
                                         font.pixelSize: Theme.fontSizeSmall
                                         color: Theme.onSurfaceVariant
                                     }

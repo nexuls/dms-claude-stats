@@ -52,7 +52,113 @@ toggle pacing indicators, and register custom profiles.
 
 - **Bar style**: ring and percentage, ring only, 5-hour and 7-day rings, or percentages only.
 - **Popout layout**: *Compact* shows rate limits, tokens, daily activity and models. *Detailed*
-  adds larger rings, weekly sessions and all-time stats.
+  keeps the same size and adds reset times, projected usage at reset, daily averages,
+  per-day totals, model shares, weekly sessions and all-time stats.
+
+### Live activity
+
+The bar icon shows what Claude Code is doing right now:
+
+| Bar icon | Meaning |
+|----------|---------|
+| A sweep circling the ring | Claude is working |
+| Pulsing red dot after the percentage, red percentage | Claude is waiting for you: a question, a plan to approve, or a permission prompt |
+| Plain ring | Claude is idle or finished; the popout lists finished sessions as Done |
+
+The popout lists each session by project folder. This needs `claude-activity-hook` registered
+for these hook events in `~/.claude/settings.json` (merge with any `hooks` you already have,
+and repeat for each `CLAUDE_CONFIG_DIR` profile you use). Adjust the path if the plugin is installed elsewhere:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.config/DankMaterialShell/plugins/claude-stats/claude-activity-hook"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook writes `$XDG_RUNTIME_DIR/claude-stats.json` and only rewrites it when a session changes
+state. The widget watches that file, so nothing polls while Claude is idle. Interrupting Claude
+with Esc sends no hook event, so the session shows as working until your next prompt.
 
 ### Custom Profiles
 

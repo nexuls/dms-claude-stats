@@ -80,15 +80,41 @@ var strings = {
         { fr: "Pourcentages seuls", es: "Solo porcentajes" },
     "Popout layout":
         { fr: "Disposition du panneau", es: "Diseño del panel" },
-    "Detailed adds larger rings, weekly sessions and all-time stats":
+    "Detailed adds reset times, projections, daily averages, per-day totals and all-time stats":
         {
-            fr: "Le mode détaillé ajoute des anneaux plus grands, les sessions de la semaine et les statistiques globales",
-            es: "El modo detallado añade anillos más grandes, las sesiones de la semana y las estadísticas totales"
+            fr: "Le mode détaillé ajoute les heures de réinitialisation, les projections, les moyennes quotidiennes, les totaux par jour et les statistiques globales",
+            es: "El modo detallado añade las horas de restablecimiento, las proyecciones, los promedios diarios, los totales por día y las estadísticas totales"
         },
+    "Resets":
+        { fr: "Réinit.", es: "Se restablece" },
+    "Projected":
+        { fr: "Projection", es: "Proyección" },
+    "of week":
+        { fr: "de la semaine", es: "de la semana" },
+    "/day":
+        { fr: "/jour", es: "/día" },
     "Compact":
         { fr: "Compact", es: "Compacto" },
     "Detailed":
         { fr: "Détaillé", es: "Detallado" },
+    // Activity
+    "Show Claude activity":
+        { fr: "Afficher l'activité de Claude", es: "Mostrar la actividad de Claude" },
+    "Animate the bar icon while Claude works and flag when it needs your input. Requires the claude-activity-hook in your Claude Code settings, see the README.":
+        {
+            fr: "Anime l'icône de la barre pendant que Claude travaille et signale quand il attend votre réponse. Nécessite claude-activity-hook dans vos réglages Claude Code, voir le README.",
+            es: "Anima el icono de la barra mientras Claude trabaja y avisa cuando necesita tu respuesta. Requiere claude-activity-hook en tu configuración de Claude Code, consulta el README."
+        },
+    "Needs your input":
+        { fr: "Attend votre réponse", es: "Necesita tu respuesta" },
+    "Working":
+        { fr: "En cours", es: "Trabajando" },
+    "Done":
+        { fr: "Terminé", es: "Terminado" },
+    "Refresh":
+        { fr: "Actualiser", es: "Actualizar" },
+    "Settings":
+        { fr: "Paramètres", es: "Ajustes" },
     "Custom Profiles":
         { fr: "Profils personnalisés", es: "Perfiles personalizados" },
     "Name":

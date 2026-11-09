@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Claude Code hook: records each session's state for the claude-stats bar widget.
+# Install it for every hook event listed in the README. `prune` drops dead sessions.
+#
+# Never print anything: UserPromptSubmit adds hook stdout to the conversation.
+set -u
+
+STATE_FILE="${CLAUDE_STATS_STATE:-${XDG_RUNTIME_DIR:-/tmp}/claude-stats.json}"
+
+command -v jq >/dev/null 2>&1 || exit 0
+
+# Hooks run under a shell, so walk up to the claude process itself.
+claude_pid() {
+    local pid=$PPID comm
+    for _ in 1 2 3 4 5; do
+        [ "$pid" -gt 1 ] 2>/dev/null || break
+        comm=$(cat "/proc/$pid/comm" 2>/dev/null) || break
+        case "$comm" in
+        claude | node)
+            echo "$pid"
+            return
+            ;;
+        esac
+        pid=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f2) || break
+    done
+    # Unknown: 0 keeps the session until SessionEnd instead of pruning it
+    echo 0
+}
+
+if [ "${1:-}" = "prune" ]; then
+    input='{}'
+    pid=0
+else
+    input=$(cat)
+    jq -e 'type == "object"' >/dev/null 2>&1 <<<"$input" || exit 0
+    pid=$(claude_pid)
+fi
+
+exec 9>"$STATE_FILE.lock"
+flock -w 2 9 || exit 0
+
+current='{}'
+if [ -s "$STATE_FILE" ]; then
+    current=$(cat "$STATE_FILE")
+    jq -e 'type == "object"' >/dev/null 2>&1 <<<"$current" || current='{}'
+fi
+
+dead=$(jq -r '.sessions // {} | to_entries[] | "\(.key) \(.value.pid // 0)"' <<<"$current" |
+    while read -r id spid; do
+        [ "$spid" -gt 0 ] 2>/dev/null || continue
+        [ -d "/proc/$spid" ] || printf '%s\n' "$id"
+    done | jq -Rsc 'split("\n") | map(select(length > 0))')
+
+next=$(jq -c --argjson input "$input" --argjson dead "$dead" --argjson pid "$pid" '
+    ($input.session_id // "") as $sid
+    | ($input.hook_event_name // "") as $event
+    | ($input.tool_name // "") as $tool
+    | ($input.notification_type // "") as $kind
+    | (if $event == "UserPromptSubmit" or $event == "PostToolUse" then "working"
+       elif $event == "PreToolUse" then
+           (if $tool == "AskUserQuestion" or $tool == "ExitPlanMode" then "asking" else "working" end)
+       elif $event == "PermissionRequest" then "asking"
+       elif $event == "Notification" then
+           (if $kind == "permission_prompt" or $kind == "elicitation_dialog" then "asking"
+            elif $kind == "" and (($input.message // "") | test("permission"; "i")) then "asking"
+            else null end)
+       elif $event == "Stop" then "done"
+       elif $event == "SessionStart" then "idle"
+       else null end) as $state
+    | .sessions = ((.sessions // {}) | with_entries(select(.key as $k | $dead | index($k) | not)))
+    | if $sid == "" then .
+      elif $event == "SessionEnd" then del(.sessions[$sid])
+      elif $state == null or .sessions[$sid].state == $state then .
+      else .sessions[$sid] = {state: $state, cwd: ($input.cwd // ""), pid: $pid, since: (now | floor)}
+      end' <<<"$current") || exit 0
+
+# PreToolUse fires on every tool call; skip the write (and the widget reload) when nothing changed.
+[ "$next" = "$(jq -c . <<<"$current")" ] && exit 0
+
+tmp="$STATE_FILE.$$.tmp"
+printf '%s\n' "$next" >"$tmp" && mv -f "$tmp" "$STATE_FILE" || rm -f "$tmp"
+exit 0

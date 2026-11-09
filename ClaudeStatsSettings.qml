@@ -49,6 +49,13 @@ PluginSettings {
         defaultValue: true
     }
 
+    ToggleSetting {
+        settingKey: "showActivity"
+        label: root.tr("Show Claude activity")
+        description: root.tr("Animate the bar icon while Claude works and flag when it needs your input. Requires the claude-activity-hook in your Claude Code settings, see the README.")
+        defaultValue: true
+    }
+
     SelectionSetting {
         settingKey: "pillStyle"
         label: root.tr("Bar style")
@@ -65,7 +72,7 @@ PluginSettings {
     SelectionSetting {
         settingKey: "popoutLayout"
         label: root.tr("Popout layout")
-        description: root.tr("Detailed adds larger rings, weekly sessions and all-time stats")
+        description: root.tr("Detailed adds reset times, projections, daily averages, per-day totals and all-time stats")
         defaultValue: "compact"
         options: [
             { label: root.tr("Compact"), value: "compact" },
