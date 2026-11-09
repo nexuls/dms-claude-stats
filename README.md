@@ -50,6 +50,10 @@ Then restart DMS.
 Open DMS Settings (`Mod + ,` > Plugins > Claude Stats) to adjust the refresh interval,
 toggle pacing indicators, and register custom profiles.
 
+- **Bar style**: ring and percentage, ring only, 5-hour and 7-day rings, or percentages only.
+- **Popout layout**: *Compact* shows rate limits, tokens, daily activity and models. *Detailed*
+  adds larger rings, weekly sessions and all-time stats.
+
 ### Custom Profiles
 
 If you use a profile manager the plugin doesn't detect automatically, add it under

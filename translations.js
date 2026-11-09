@@ -5,24 +5,14 @@ var strings = {
         { fr: "Utilisation Claude Code", es: "Uso de Claude Code" },
     "Subscription":
         { fr: "Abonnement", es: "Suscripción" },
-    "5h Rate Window":
-        { fr: "Fenêtre de 5 h", es: "Ventana de 5 h" },
-    "used":
-        { fr: "utilisé", es: "usado" },
-    "Resets in":
-        { fr: "Réinitialisation dans", es: "Restablecimiento en" },
     "Resetting...":
         { fr: "Réinitialisation...", es: "Restableciendo..." },
-    "7-Day Usage":
-        { fr: "Utilisation sur 7 jours", es: "Uso durante 7 días" },
     "sessions":
         { fr: "sessions", es: "sesiones" },
     "msgs":
         { fr: "messages", es: "mensajes" },
     "Daily Activity":
         { fr: "Activité quotidienne", es: "Actividad diaria" },
-    "Token Consumption":
-        { fr: "Consommation de tokens", es: "Consumo de tokens" },
     "Today":
         { fr: "Aujourd'hui", es: "Hoy" },
     "Week":
@@ -55,10 +45,6 @@ var strings = {
         { fr: "Fréquence de mise à jour des données (minutes)", es: "Frecuencia de actualización de los datos (minutos)" },
     "All":
         { fr: "Tout", es: "Todos" },
-    "Profile":
-        { fr: "Profil", es: "Perfil" },
-    "total":
-        { fr: "total", es: "total" },
     // Pacing
     "over pace":
         { fr: "au-dessus du rythme", es: "por encima del ritmo" },
@@ -75,6 +61,34 @@ var strings = {
             fr: "Indique si l'utilisation est en avance ou en retard sur la fenêtre de temps",
             es: "Indica si el consumo está adelantado o retrasado respecto a la ventana de tiempo"
         },
+    // Layout
+    "5 hours":
+        { fr: "5 heures", es: "5 horas" },
+    "7 days":
+        { fr: "7 jours", es: "7 días" },
+    "Bar style":
+        { fr: "Style de la barre", es: "Estilo de la barra" },
+    "What the bar widget shows":
+        { fr: "Ce qu'affiche le widget de la barre", es: "Lo que muestra el widget de la barra" },
+    "Ring and percentage":
+        { fr: "Anneau et pourcentage", es: "Anillo y porcentaje" },
+    "Ring only":
+        { fr: "Anneau seul", es: "Solo anillo" },
+    "5-hour and 7-day rings":
+        { fr: "Anneaux 5 heures et 7 jours", es: "Anillos de 5 horas y 7 días" },
+    "Percentages only":
+        { fr: "Pourcentages seuls", es: "Solo porcentajes" },
+    "Popout layout":
+        { fr: "Disposition du panneau", es: "Diseño del panel" },
+    "Detailed adds larger rings, weekly sessions and all-time stats":
+        {
+            fr: "Le mode détaillé ajoute des anneaux plus grands, les sessions de la semaine et les statistiques globales",
+            es: "El modo detallado añade anillos más grandes, las sesiones de la semana y las estadísticas totales"
+        },
+    "Compact":
+        { fr: "Compact", es: "Compacto" },
+    "Detailed":
+        { fr: "Détaillé", es: "Detallado" },
     "Custom Profiles":
         { fr: "Profils personnalisés", es: "Perfiles personalizados" },
     "Name":

@@ -49,6 +49,30 @@ PluginSettings {
         defaultValue: true
     }
 
+    SelectionSetting {
+        settingKey: "pillStyle"
+        label: root.tr("Bar style")
+        description: root.tr("What the bar widget shows")
+        defaultValue: "ring"
+        options: [
+            { label: root.tr("Ring and percentage"), value: "ring" },
+            { label: root.tr("Ring only"), value: "ringOnly" },
+            { label: root.tr("5-hour and 7-day rings"), value: "dual" },
+            { label: root.tr("Percentages only"), value: "text" }
+        ]
+    }
+
+    SelectionSetting {
+        settingKey: "popoutLayout"
+        label: root.tr("Popout layout")
+        description: root.tr("Detailed adds larger rings, weekly sessions and all-time stats")
+        defaultValue: "compact"
+        options: [
+            { label: root.tr("Compact"), value: "compact" },
+            { label: root.tr("Detailed"), value: "detailed" }
+        ]
+    }
+
     Rectangle {
         width: parent.width
         height: 1

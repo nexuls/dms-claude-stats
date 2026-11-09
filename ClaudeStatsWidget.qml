@@ -3,7 +3,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Common
 import qs.Services
-import qs.Widgets
+import qs.DCommon.Widgets
 import qs.Modules.Plugins
 import "translations.js" as Tr
 
@@ -29,6 +29,9 @@ PluginComponent {
     property int refreshInterval: (pluginData.refreshInterval || 2) * 60000
     property bool showPacing: pluginData.showPacing !== false
     property var customProfiles: pluginData.customProfiles || []
+    // ring | ringOnly | dual | text
+    property string pillStyle: pluginData.pillStyle || "ring"
+    readonly property bool compact: (pluginData.popoutLayout || "compact") === "compact"
     property bool customProfilesRefreshPending: false
 
     // API usage data
@@ -68,10 +71,8 @@ PluginComponent {
     // Chart hover state
     property int hoveredDay: -1
 
-    // Model list
-    ListModel {
-        id: modelListData
-    }
+    // [{ modelName, modelTokens }] for the current calendar week
+    property var weekModels: []
 
     // Profile selector state
     property string selectedProfile: "all"
@@ -80,10 +81,8 @@ PluginComponent {
     //   daily:[7], dailyCosts:[7], weekModels:[{modelName,modelTokens}],
     //   fiveHourUtil, sevenDayUtil, fiveHourReset, sevenDayReset }
 
-    ListModel {
-        id: profileListModel
-    }
-    // First entry is always { name: "all" }; populated by PROFILES output field.
+    // First entry is always "all"; populated by the PROFILES output field.
+    property var profileNames: ["all"]
 
     // currentPd is a single reactive snapshot of the selected profile's data object.
     // Re-evaluated whenever selectedProfile or profileData changes.
@@ -116,13 +115,13 @@ PluginComponent {
     property real displayWeekCost: currentPd && currentPd.weekCost !== undefined ? currentPd.weekCost : weekCost
     property real displayMonthCost: currentPd && currentPd.monthCost !== undefined ? currentPd.monthCost : monthCost
     property var displayDailyTokens: currentPd && currentPd.daily ? currentPd.daily : dailyTokens
+    property var displayModels: currentPd ? (currentPd.weekModels || []) : weekModels
+    readonly property real displayModelTotal: displayModels.reduce((sum, m) => sum + m.modelTokens, 0)
 
     // Per-profile daily tokens for chart overlay. Empty array when "all" selected.
     property var profileDailyTokens: currentPd && currentPd.daily ? currentPd.daily : []
 
-    // Note: displayDailyCosts is intentionally NOT defined.
-    // The tooltip cost line always shows aggregate dailyCosts per spec.
-    // The Token Consumption card uses displayTodayCost/displayWeekCost/displayMonthCost instead.
+    // No displayDailyCosts: the hovered-day readout always shows aggregate dailyCosts.
 
     property string displayFiveHourCountdown: {
         if (!displayFiveHourReset || !displayAuthOk)
@@ -191,33 +190,6 @@ PluginComponent {
     // Live countdown
     property real countdownNow: Date.now()
 
-    property string fiveHourCountdown: {
-        if (!fiveHourReset)
-            return "";
-        var resetMs = new Date(fiveHourReset).getTime();
-        var remaining = Math.max(0, resetMs - countdownNow);
-        if (remaining <= 0)
-            return tr("Resetting...");
-        var hours = Math.floor(remaining / 3600000);
-        var mins = Math.floor((remaining % 3600000) / 60000);
-        return hours + "h " + (mins < 10 ? "0" : "") + mins + "m";
-    }
-
-    property string sevenDayCountdown: {
-        if (!sevenDayReset)
-            return "";
-        var resetMs = new Date(sevenDayReset).getTime();
-        var remaining = Math.max(0, resetMs - countdownNow);
-        if (remaining <= 0)
-            return tr("Resetting...");
-        var days = Math.floor(remaining / 86400000);
-        var hours = Math.floor((remaining % 86400000) / 3600000);
-        var mins = Math.floor((remaining % 3600000) / 60000);
-        if (days > 0)
-            return days + "d " + hours + "h " + (mins < 10 ? "0" : "") + mins + "m";
-        return hours + "h " + (mins < 10 ? "0" : "") + mins + "m";
-    }
-
     Timer {
         interval: 60000
         running: true
@@ -237,8 +209,7 @@ PluginComponent {
     // Script path via PluginService
     property string scriptPath: PluginService.getPluginPath("claudeStats") + "/get-claude-usage"
 
-    popoutWidth: 380
-    popoutHeight: 740
+    popoutWidth: compact ? 380 : 420
 
     // --- Helpers ---
 
@@ -258,12 +229,22 @@ PluginComponent {
         return name.charAt(0).toUpperCase() + name.slice(1);
     }
 
-    function progressColor(pct) {
+    function progressColor(pct, base) {
         if (pct > 80)
             return Theme.error;
         if (pct > 50)
             return Theme.warning;
-        return Theme.primary;
+        return base || Theme.primary;
+    }
+
+    function modelColor(index) {
+        return [Theme.primary, Theme.secondary, Theme.tertiary][index] || Theme.outline;
+    }
+
+    function barHeight(tokens, full) {
+        if (!(tokens > 0) || maxDaily <= 0)
+            return 0;
+        return Math.max(tokens / maxDaily * full, Theme.spacingXXS);
     }
 
     // Returns { timeFrac, delta, status } for a usage window.
@@ -330,22 +311,6 @@ PluginComponent {
         if (status === "over")
             return Theme.warning;
         return Theme.surfaceVariantText;
-    }
-
-    // Draws the pace tick — a short radial mark at the linear-burn position — on
-    // a ring canvas. Shared by the 5h and 7d popout rings.
-    function drawPaceTick(ctx, cx, cy, r, lw, pace) {
-        if (!showPacing || !pace || pace.status === "unknown")
-            return;
-        var a = -Math.PI / 2 + 2 * Math.PI * Math.min(Math.max(pace.timeFrac, 0), 1);
-        var ri = r - lw / 2 - 1, ro = r + lw / 2 + 1;
-        ctx.beginPath();
-        ctx.moveTo(cx + ri * Math.cos(a), cy + ri * Math.sin(a));
-        ctx.lineTo(cx + ro * Math.cos(a), cy + ro * Math.sin(a));
-        ctx.lineWidth = 2;
-        ctx.lineCap = "butt";
-        ctx.strokeStyle = Theme.surfaceText;
-        ctx.stroke();
     }
 
     // Notice for a non-ok auth state; "" when there is nothing to report
@@ -529,19 +494,20 @@ PluginComponent {
             firstSession = val;
             break;
         case "WEEK_MODELS":
-            modelListData.clear();
-            if (val.length > 0) {
-                var wmpairs = val.split(",");
+            {
+                var wms0 = [];
+                var wmpairs = val.length > 0 ? val.split(",") : [];
                 for (var wmi = 0; wmi < wmpairs.length; wmi++) {
                     var wmeq = wmpairs[wmi].indexOf("=");
                     if (wmeq >= 0)
-                        modelListData.append({
+                        wms0.push({
                             modelName: wmpairs[wmi].substring(0, wmeq),
                             modelTokens: parseInt(wmpairs[wmi].substring(wmeq + 1)) || 0
                         });
                 }
+                weekModels = wms0;
+                break;
             }
-            break;
         case "DAILY":
             var parts = val.split(",");
             var arr = [];
@@ -570,15 +536,8 @@ PluginComponent {
             break;
         case "PROFILES":
             {
-                profileListModel.clear();
-                profileListModel.append({
-                    name: "all"
-                });
                 var profs = val.split(",");
-                for (var pi = 0; pi < profs.length; pi++)
-                    profileListModel.append({
-                        name: profs[pi]
-                    });
+                profileNames = ["all"].concat(profs);
                 // Reset selectedProfile if it no longer exists in new profile list
                 if (selectedProfile !== "all") {
                     var found = false;
@@ -770,6 +729,211 @@ PluginComponent {
         }
     }
 
+
+    // --- Shared visuals ---
+
+    component UsageRing: DRingGauge {
+        id: ring
+
+        property real percent: 0
+        property color baseColor: Theme.primary
+        property var pace: null
+
+        value: Math.min(Math.max(percent, 0), 100) / 100
+        ringColor: root.progressColor(percent, baseColor)
+
+        // Linear-burn position: where usage would be at a steady rate
+        Item {
+            anchors.fill: parent
+            visible: root.showPacing && ring.pace !== null && ring.pace.status !== "unknown"
+            rotation: ring.pace ? Math.min(Math.max(ring.pace.timeFrac, 0), 1) * ring.spanAngle : 0
+
+            Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: -Theme.spacingXXS
+                width: Theme.outlineWidthFocused
+                height: ring.strokeWidth + Theme.spacingXXS * 2
+                radius: width / 2
+                color: Theme.surfaceText
+            }
+        }
+    }
+
+    component PillGauge: Item {
+        id: gauge
+
+        readonly property real stroke: Math.max(Theme.spacingXXS, root.iconSize / 8)
+
+        width: root.iconSize
+        height: root.iconSize
+        visible: root.pillStyle !== "text"
+
+        UsageRing {
+            anchors.fill: parent
+            strokeWidth: gauge.stroke
+            percent: root.fiveHourUtil
+        }
+
+        UsageRing {
+            anchors.centerIn: parent
+            width: parent.width - (gauge.stroke + Theme.spacingXXS) * 2
+            height: width
+            visible: root.pillStyle === "dual"
+            strokeWidth: gauge.stroke
+            percent: root.sevenDayUtil
+            baseColor: Theme.tertiary
+        }
+    }
+
+    component PillLabel: StyledText {
+        property bool stacked: false
+        readonly property string fiveText: Math.round(root.fiveHourUtil) + "%" + (root.pillOverPace ? " ↑" : "")
+        readonly property string sevenText: Math.round(root.sevenDayUtil) + "%"
+
+        visible: root.pillStyle !== "ringOnly"
+        text: {
+            if (root.pillStyle !== "text")
+                return fiveText;
+            return stacked ? fiveText + "\n" + sevenText : "5h " + fiveText + " · 7d " + sevenText;
+        }
+        horizontalAlignment: Text.AlignHCenter
+        font.pixelSize: Theme.barTextSize(root.barThickness, root.barConfig?.fontScale, root.barConfig?.maximizeWidgetText)
+        color: root.pillOverPace ? root.paceColor(root.pillFivePace.status) : Theme.surfaceText
+    }
+
+    component RateWindow: Row {
+        id: rate
+
+        property string label: ""
+        property real percent: 0
+        property var pace: null
+        property string countdown: ""
+        property color baseColor: Theme.primary
+        property string extra: ""
+
+        spacing: Theme.spacingM
+
+        UsageRing {
+            id: rateRing
+            width: root.compact ? Theme.buttonHeightM : Theme.buttonHeightM + Theme.spacingXL
+            height: width
+            anchors.verticalCenter: parent.verticalCenter
+            strokeWidth: root.compact ? Theme.spacingXS + Theme.spacingXXS : Theme.spacingS
+            trackGap: Theme.spacingXXS
+            percent: rate.percent
+            pace: rate.pace
+            baseColor: rate.baseColor
+
+            StyledText {
+                anchors.centerIn: parent
+                text: Math.round(rate.percent) + "%"
+                font.pixelSize: root.compact ? Theme.fontSizeMedium : Theme.fontSizeXLarge
+                font.weight: Theme.fontWeightBold
+                color: Theme.surfaceText
+            }
+        }
+
+        Column {
+            width: Math.max(0, rate.width - rateRing.width - rate.spacing)
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Theme.spacingXXS
+
+            StyledText {
+                width: parent.width
+                text: rate.label
+                font.pixelSize: Theme.fontSizeMedium
+                font.weight: Theme.fontWeightMedium
+                color: Theme.surfaceText
+                elide: Text.ElideRight
+            }
+
+            Row {
+                width: parent.width
+                spacing: Theme.spacingXXS
+                visible: rate.countdown !== ""
+
+                DIcon {
+                    id: resetIcon
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "restart_alt"
+                    size: Theme.iconSizeSmall
+                    color: Theme.onSurfaceVariant
+                }
+
+                StyledText {
+                    width: parent.width - resetIcon.width - parent.spacing
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: rate.countdown
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.onSurfaceVariant
+                    elide: Text.ElideRight
+                }
+            }
+
+            StyledText {
+                width: parent.width
+                text: root.paceLabel(rate.pace)
+                visible: root.showPacing && text !== ""
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.paceColor(rate.pace ? rate.pace.status : "")
+                wrapMode: Text.WordWrap
+            }
+
+            StyledText {
+                width: parent.width
+                text: rate.extra
+                visible: text !== ""
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.onSurfaceVariant
+                wrapMode: Text.WordWrap
+            }
+        }
+    }
+
+    component TokenTile: DCard {
+        id: tile
+
+        property string label: ""
+        property real tokens: 0
+        property real cost: 0
+
+        height: tileColumn.implicitHeight + pad * 2
+        restRadius: Theme.cornerRadiusL
+
+        Column {
+            id: tileColumn
+            width: parent.width
+            spacing: Theme.spacingXXS
+
+            StyledText {
+                width: parent.width
+                text: tile.label
+                font.pixelSize: Theme.fontSizeSmall
+                color: tile.mutedColor
+                elide: Text.ElideRight
+            }
+
+            StyledText {
+                width: parent.width
+                text: root.formatTokens(tile.tokens)
+                font.pixelSize: root.compact ? Theme.fontSizeLarge : Theme.fontSizeXLarge
+                font.weight: Theme.fontWeightBold
+                color: tile.contentColor
+                elide: Text.ElideRight
+            }
+
+            // Kept in layout when hidden so all three tiles stay the same height
+            StyledText {
+                width: parent.width
+                text: root.formatCost(tile.cost)
+                opacity: tile.cost > 0 ? 1 : 0
+                font.pixelSize: Theme.fontSizeSmall
+                color: tile.mutedColor
+                elide: Text.ElideRight
+            }
+        }
+    }
+
     // --- Taskbar pills (show 5h utilization) ---
 
     horizontalBarPill: Component {
@@ -777,44 +941,11 @@ PluginComponent {
             spacing: Theme.spacingXS
             opacity: root.authOk ? 1 : 0.45
 
-            Canvas {
-                id: hRing
-                width: root.iconSize
-                height: root.iconSize
+            PillGauge {
                 anchors.verticalCenter: parent.verticalCenter
-                renderStrategy: Canvas.Cooperative
-
-                property real percent: root.fiveHourUtil
-                onPercentChanged: requestPaint()
-                onWidthChanged: requestPaint()
-
-                onPaint: {
-                    var ctx = getContext("2d");
-                    ctx.reset();
-                    var cx = width / 2, cy = height / 2, r = width * 0.375, lw = width * 0.125;
-
-                    ctx.beginPath();
-                    ctx.arc(cx, cy, r, 0, 2 * Math.PI);
-                    ctx.lineWidth = lw;
-                    ctx.strokeStyle = Theme.surfaceVariant;
-                    ctx.stroke();
-
-                    var pct = percent / 100;
-                    if (pct > 0) {
-                        ctx.beginPath();
-                        ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * Math.min(pct, 1));
-                        ctx.lineWidth = lw;
-                        ctx.strokeStyle = root.progressColor(percent);
-                        ctx.lineCap = "round";
-                        ctx.stroke();
-                    }
-                }
             }
 
-            StyledText {
-                text: Math.round(root.fiveHourUtil) + "%" + (root.pillOverPace ? " ↑" : "")
-                font.pixelSize: Theme.barTextSize(root.barThickness, root.barConfig?.fontScale, root.barConfig?.maximizeWidgetText)
-                color: root.pillOverPace ? root.paceColor(root.pillFivePace.status) : Theme.surfaceText
+            PillLabel {
                 anchors.verticalCenter: parent.verticalCenter
             }
         }
@@ -822,188 +953,21 @@ PluginComponent {
 
     verticalBarPill: Component {
         Column {
-            spacing: Theme.spacingXS || 4
+            spacing: Theme.spacingXS
             opacity: root.authOk ? 1 : 0.45
 
-            Canvas {
-                id: vRing
-                width: root.iconSize
-                height: root.iconSize
+            PillGauge {
                 anchors.horizontalCenter: parent.horizontalCenter
-                renderStrategy: Canvas.Cooperative
-
-                property real percent: root.fiveHourUtil
-                onPercentChanged: requestPaint()
-                onWidthChanged: requestPaint()
-
-                onPaint: {
-                    var ctx = getContext("2d");
-                    ctx.reset();
-                    var cx = width / 2, cy = height / 2, r = width * 0.375, lw = width * 0.125;
-
-                    ctx.beginPath();
-                    ctx.arc(cx, cy, r, 0, 2 * Math.PI);
-                    ctx.lineWidth = lw;
-                    ctx.strokeStyle = Theme.surfaceVariant;
-                    ctx.stroke();
-
-                    var pct = percent / 100;
-                    if (pct > 0) {
-                        ctx.beginPath();
-                        ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * Math.min(pct, 1));
-                        ctx.lineWidth = lw;
-                        ctx.strokeStyle = root.progressColor(percent);
-                        ctx.lineCap = "round";
-                        ctx.stroke();
-                    }
-                }
             }
 
-            StyledText {
-                text: Math.round(root.fiveHourUtil) + "%" + (root.pillOverPace ? " ↑" : "")
-                font.pixelSize: Theme.barTextSize(root.barThickness, root.barConfig?.fontScale, root.barConfig?.maximizeWidgetText)
-                color: root.pillOverPace ? root.paceColor(root.pillFivePace.status) : Theme.surfaceText
+            PillLabel {
                 anchors.horizontalCenter: parent.horizontalCenter
+                stacked: true
             }
         }
     }
 
     // --- Popout ---
-
-    // Profile selector components — declared at root scope for Loader access
-    Component {
-        id: profileTabsComponent
-        Row {
-            spacing: Theme.spacingXS
-
-            Repeater {
-                model: profileListModel
-                delegate: Rectangle {
-                    width: tabLabel.implicitWidth + Theme.spacingM * 2
-                    height: 32
-                    radius: 16
-                    color: root.selectedProfile === name ? Theme.primary : Theme.surfaceVariant
-
-                    Behavior on color {
-                        ColorAnimation {
-                            duration: 120
-                        }
-                    }
-
-                    StyledText {
-                        id: tabLabel
-                        anchors.centerIn: parent
-                        text: name === "all" ? root.tr("All") : name
-                        font.pixelSize: Theme.fontSizeSmall
-                        font.weight: root.selectedProfile === name ? Font.Medium : Font.Normal
-                        color: root.selectedProfile === name ? Theme.primaryText : Theme.surfaceVariantText
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.selectedProfile = name
-                    }
-                }
-            }
-        }
-    }
-
-    Component {
-        id: profileDropdownComponent
-        Rectangle {
-            // Note: z:100 on popup is scoped to subtree; cards below may overlap when open.
-            // Acceptable for >5 profiles (rare case). Full modal overlay is out of scope.
-            width: parent ? parent.width : 0
-            height: 36
-            radius: 8
-            color: Theme.surfaceVariant
-
-            Row {
-                anchors.fill: parent
-                anchors.leftMargin: Theme.spacingM
-                anchors.rightMargin: Theme.spacingM
-                spacing: Theme.spacingXS
-
-                StyledText {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: root.tr("Profile") + ":"
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
-                }
-
-                StyledText {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: root.selectedProfile === "all" ? root.tr("All") : root.selectedProfile
-                    font.pixelSize: Theme.fontSizeSmall
-                    font.weight: Font.Medium
-                    color: Theme.surfaceText
-                }
-            }
-
-            MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                onClicked: profileDropdownPopup.visible = !profileDropdownPopup.visible
-            }
-
-            MouseArea {
-                id: profileDropdownOverlay
-                visible: profileDropdownPopup.visible
-                anchors.fill: root
-                z: 99
-                onClicked: profileDropdownPopup.visible = false
-            }
-
-            Rectangle {
-                id: profileDropdownPopup
-                visible: false
-                z: 100
-                anchors.top: parent.bottom
-                anchors.topMargin: 4
-                anchors.left: parent.left
-                width: parent.width
-                height: dropdownCol.implicitHeight + Theme.spacingS * 2
-                radius: 8
-                color: Theme.surfaceContainer
-
-                Column {
-                    id: dropdownCol
-                    anchors.fill: parent
-                    anchors.margins: Theme.spacingS
-                    spacing: 2
-
-                    Repeater {
-                        model: profileListModel
-                        delegate: Rectangle {
-                            width: parent.width
-                            height: 28
-                            radius: 4
-                            color: root.selectedProfile === name ? Theme.primary : "transparent"
-
-                            StyledText {
-                                anchors.verticalCenter: parent.verticalCenter
-                                anchors.left: parent.left
-                                anchors.leftMargin: Theme.spacingXS
-                                text: name === "all" ? root.tr("All") : name
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: root.selectedProfile === name ? Theme.primaryText : Theme.surfaceText
-                            }
-
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    root.selectedProfile = name;
-                                    profileDropdownPopup.visible = false;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     popoutContent: Component {
         PopoutComponent {
@@ -1012,596 +976,336 @@ PluginComponent {
                 var label = root.formatSubscription(root.displaySubscriptionType, root.displayRateLimitTier);
                 return label ? root.tr("Subscription") + ": " + label : "";
             }
-            showCloseButton: true
 
             Column {
-                width: parent.width - Theme.spacingM * 2
-                anchors.horizontalCenter: parent.horizontalCenter
-                spacing: Theme.spacingL
+                width: parent.width
+                spacing: Theme.spacingS
 
-                // --- Profile selector (tabs ≤5 entries, dropdown >5) ---
-                // Hidden when only one real profile (e.g. default only, no CCS instances)
-                // count > 2 means "All" + at least 2 real profiles
-                Item {
+                // Hidden when there is only one real profile
+                DFilterChips {
                     width: parent.width
-                    height: profileSelectorLoader.height
-                    visible: profileListModel.count > 2
-
-                    Loader {
-                        id: profileSelectorLoader
-                        width: parent.width
-                        // Explicit height binding — Loader defaults to 0 without this
-                        height: item ? item.implicitHeight : 0
-                        sourceComponent: profileListModel.count <= 5 ? profileTabsComponent : profileDropdownComponent
+                    visible: root.profileNames.length > 2
+                    showCounts: false
+                    model: root.profileNames.map(name => name === "all" ? root.tr("All") : name)
+                    currentIndex: Math.max(0, root.profileNames.indexOf(root.selectedProfile))
+                    // A click replaces the currentIndex binding, so it is restored by hand
+                    onSelectionChanged: index => {
+                        root.selectedProfile = root.profileNames[index] || "all";
+                        currentIndex = Qt.binding(() => Math.max(0, root.profileNames.indexOf(root.selectedProfile)));
                     }
                 }
 
-                // --- Auth notice (only when the usage numbers can't be trusted) ---
-                StyledRect {
+                // Only when the rate limit numbers can't be trusted
+                Rectangle {
                     width: parent.width
-                    height: authNoticeText.implicitHeight + Theme.spacingS * 2
-                    color: Theme.surfaceContainerHigh
+                    height: noticeRow.implicitHeight + Theme.spacingS * 2
+                    radius: Theme.cornerRadiusL
+                    color: Theme.errorContainer
                     visible: root.displayAuthNotice !== ""
 
-                    StyledText {
-                        id: authNoticeText
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingS
-                        text: root.displayAuthNotice
-                        font.pixelSize: Theme.fontSizeSmall
-                        color: Theme.warning
-                        wrapMode: Text.WordWrap
-                    }
-                }
-
-                // --- 5h Rate Window card ---
-                StyledRect {
-                    width: parent.width
-                    height: fiveHourContent.implicitHeight + Theme.spacingS * 2
-                    color: Theme.surfaceContainerHigh
-
                     Row {
-                        id: fiveHourContent
-                        opacity: root.displayAuthOk ? 1 : 0.45
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingS
-                        spacing: Theme.spacingM
-
-                        Canvas {
-                            id: fiveHourRing
-                            width: 100
-                            height: 100
-                            anchors.verticalCenter: parent.verticalCenter
-                            renderStrategy: Canvas.Cooperative
-
-                            property real percent: root.displayFiveHourUtil
-                            onPercentChanged: requestPaint()
-                            property var pace: root.fiveHourPace
-                            onPaceChanged: requestPaint()
-
-                            onPaint: {
-                                var ctx = getContext("2d");
-                                ctx.reset();
-                                var cx = width / 2, cy = height / 2, r = 38, lw = 8;
-
-                                ctx.beginPath();
-                                ctx.arc(cx, cy, r, 0, 2 * Math.PI);
-                                ctx.lineWidth = lw;
-                                ctx.strokeStyle = Theme.surfaceVariant;
-                                ctx.stroke();
-
-                                var pct = percent / 100;
-                                if (pct > 0) {
-                                    ctx.beginPath();
-                                    ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * Math.min(pct, 1));
-                                    ctx.lineWidth = lw;
-                                    ctx.strokeStyle = root.progressColor(percent);
-                                    ctx.lineCap = "round";
-                                    ctx.stroke();
-                                }
-
-                                root.drawPaceTick(ctx, cx, cy, r, lw, pace);
-                            }
-
-                            StyledText {
-                                anchors.centerIn: parent
-                                text: Math.round(root.displayFiveHourUtil) + "%"
-                                font.pixelSize: Theme.fontSizeXLarge
-                                font.weight: Font.DemiBold
-                                color: Theme.surfaceText
-                            }
-                        }
-
-                        Column {
-                            width: Math.max(0, parent.width - fiveHourRing.width - parent.spacing)
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: Theme.spacingS
-
-                            StyledText {
-                                width: parent.width
-                                text: root.tr("5h Rate Window")
-                                font.pixelSize: Theme.fontSizeMedium
-                                font.weight: Font.Medium
-                                color: Theme.surfaceText
-                                wrapMode: Text.WordWrap
-                            }
-                            StyledText {
-                                width: parent.width
-                                text: Math.round(root.displayFiveHourUtil) + "% " + root.tr("used")
-                                font.pixelSize: Theme.fontSizeMedium
-                                color: root.progressColor(root.displayFiveHourUtil)
-                                wrapMode: Text.WordWrap
-                            }
-                            StyledText {
-                                width: parent.width
-                                text: root.paceLabel(root.fiveHourPace)
-                                visible: root.showPacing && text !== ""
-                                font.pixelSize: Theme.fontSizeMedium
-                                color: root.paceColor(root.fiveHourPace.status)
-                                wrapMode: Text.WordWrap
-                            }
-                            StyledText {
-                                width: parent.width
-                                text: root.displayFiveHourCountdown ? root.tr("Resets in") + " " + root.displayFiveHourCountdown : ""
-                                font.pixelSize: Theme.fontSizeMedium
-                                color: Theme.surfaceVariantText
-                                visible: root.displayFiveHourCountdown !== ""
-                                wrapMode: Text.WordWrap
-                            }
-                        }
-                    }
-                }
-
-                // --- 7-Day Usage card ---
-                StyledRect {
-                    width: parent.width
-                    height: sevenDayContent.implicitHeight + Theme.spacingM * 2
-                    color: Theme.surfaceContainerHigh
-
-                    Row {
-                        id: sevenDayContent
-                        opacity: root.displayAuthOk ? 1 : 0.45
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingM
-                        spacing: Theme.spacingM
-
-                        Canvas {
-                            id: weeklySmallRing
-                            width: 72
-                            height: 72
-                            anchors.verticalCenter: parent.verticalCenter
-                            renderStrategy: Canvas.Cooperative
-
-                            property real percent: root.displaySevenDayUtil
-                            onPercentChanged: requestPaint()
-                            property var pace: root.sevenDayPace
-                            onPaceChanged: requestPaint()
-
-                            onPaint: {
-                                var ctx = getContext("2d");
-                                ctx.reset();
-                                var cx = width / 2, cy = height / 2, r = 28, lw = 6;
-
-                                ctx.beginPath();
-                                ctx.arc(cx, cy, r, 0, 2 * Math.PI);
-                                ctx.lineWidth = lw;
-                                ctx.strokeStyle = Theme.surfaceVariant;
-                                ctx.stroke();
-
-                                var pct = percent / 100;
-                                if (pct > 0) {
-                                    ctx.beginPath();
-                                    ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * Math.min(pct, 1));
-                                    ctx.lineWidth = lw;
-                                    ctx.strokeStyle = root.progressColor(percent);
-                                    ctx.lineCap = "round";
-                                    ctx.stroke();
-                                }
-
-                                root.drawPaceTick(ctx, cx, cy, r, lw, pace);
-                            }
-
-                            StyledText {
-                                anchors.centerIn: parent
-                                text: Math.round(root.displaySevenDayUtil) + "%"
-                                font.pixelSize: 14
-                                font.weight: Font.DemiBold
-                                color: Theme.surfaceText
-                            }
-                        }
-
-                        Column {
-                            width: Math.max(0, parent.width - weeklySmallRing.width - parent.spacing)
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: Theme.spacingXS
-
-                            StyledText {
-                                width: parent.width
-                                text: root.tr("7-Day Usage") + " · " + Math.round(root.displaySevenDayUtil) + "%"
-                                font.pixelSize: Theme.fontSizeMedium
-                                font.weight: Font.Medium
-                                color: Theme.surfaceText
-                                wrapMode: Text.WordWrap
-                            }
-                            StyledText {
-                                width: parent.width
-                                text: root.paceLabel(root.sevenDayPace)
-                                visible: root.showPacing && text !== ""
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: root.paceColor(root.sevenDayPace.status)
-                                wrapMode: Text.WordWrap
-                            }
-                            StyledText {
-                                width: parent.width
-                                text: {
-                                    var parts = [];
-                                    if (root.displayWeekSessions > 0)
-                                        parts.push(root.displayWeekSessions + " " + root.tr("sessions"));
-                                    if (root.displayWeekMessages > 0)
-                                        parts.push(root.displayWeekMessages + " " + root.tr("msgs"));
-                                    return parts.join(" · ");
-                                }
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                                visible: text !== ""
-                                wrapMode: Text.WordWrap
-                            }
-                            StyledText {
-                                width: parent.width
-                                text: root.displaySevenDayCountdown ? root.tr("Resets in") + " " + root.displaySevenDayCountdown : ""
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                                visible: root.displaySevenDayCountdown !== ""
-                                wrapMode: Text.WordWrap
-                            }
-                        }
-                    }
-                }
-
-                // --- Token Consumption card ---
-                StyledRect {
-                    width: parent.width
-                    height: consumptionCol.implicitHeight + Theme.spacingM * 2
-                    color: Theme.surfaceContainerHigh
-
-                    Column {
-                        id: consumptionCol
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingM
-                        spacing: Theme.spacingM
-
-                        StyledText {
-                            text: root.tr("Token Consumption")
-                            font.pixelSize: Theme.fontSizeMedium
-                            font.weight: Font.Medium
-                            color: Theme.surfaceText
-                        }
-
-                        Row {
-                            width: parent.width
-
-                            Column {
-                                width: parent.width / 3
-                                spacing: 4
-
-                                StyledText {
-                                    text: root.tr("Today")
-                                    font.pixelSize: Theme.fontSizeSmall
-                                    color: Theme.surfaceVariantText
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                }
-                                StyledText {
-                                    text: root.formatTokens(root.displayDailyTokens[root.todayIndex])
-                                    font.pixelSize: Theme.fontSizeLarge
-                                    font.weight: Font.DemiBold
-                                    color: Theme.primary
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                }
-                                StyledText {
-                                    text: root.formatCost(root.displayTodayCost)
-                                    font.pixelSize: Theme.fontSizeSmall
-                                    color: Theme.surfaceVariantText
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    visible: root.displayTodayCost > 0
-                                }
-                            }
-
-                            Column {
-                                width: parent.width / 3
-                                spacing: 4
-
-                                StyledText {
-                                    text: root.tr("Week")
-                                    font.pixelSize: Theme.fontSizeSmall
-                                    color: Theme.surfaceVariantText
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                }
-                                StyledText {
-                                    text: root.formatTokens(root.displayWeekTokens)
-                                    font.pixelSize: Theme.fontSizeLarge
-                                    font.weight: Font.DemiBold
-                                    color: Theme.surfaceText
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                }
-                                StyledText {
-                                    text: root.formatCost(root.displayWeekCost)
-                                    font.pixelSize: Theme.fontSizeSmall
-                                    color: Theme.surfaceVariantText
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    visible: root.displayWeekCost > 0
-                                }
-                            }
-
-                            Column {
-                                width: parent.width / 3
-                                spacing: 4
-
-                                StyledText {
-                                    text: root.tr("Month")
-                                    font.pixelSize: Theme.fontSizeSmall
-                                    color: Theme.surfaceVariantText
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                }
-                                StyledText {
-                                    text: root.formatTokens(root.displayMonthTokens)
-                                    font.pixelSize: Theme.fontSizeLarge
-                                    font.weight: Font.DemiBold
-                                    color: Theme.surfaceText
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                }
-                                StyledText {
-                                    text: root.formatCost(root.displayMonthCost)
-                                    font.pixelSize: Theme.fontSizeSmall
-                                    color: Theme.surfaceVariantText
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    visible: root.displayMonthCost > 0
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // --- Daily activity card ---
-                StyledRect {
-                    width: parent.width
-                    height: dailyCol.implicitHeight + Theme.spacingM * 2
-                    color: Theme.surfaceContainerHigh
-
-                    Column {
-                        id: dailyCol
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingM
+                        id: noticeRow
+                        x: Theme.spacingM
+                        y: Theme.spacingS
+                        width: parent.width - Theme.spacingM * 2
                         spacing: Theme.spacingS
 
-                        StyledText {
-                            text: root.tr("Daily Activity")
-                            font.pixelSize: Theme.fontSizeMedium
-                            font.weight: Font.Medium
-                            color: Theme.surfaceText
+                        DIcon {
+                            id: noticeIcon
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: "warning"
+                            size: Theme.iconSizeSmall
+                            color: Theme.onErrorContainer
                         }
+
+                        StyledText {
+                            width: parent.width - noticeIcon.width - parent.spacing
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: root.displayAuthNotice
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: Theme.onErrorContainer
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+
+                // --- Rate windows ---
+                DCard {
+                    width: parent.width
+                    height: rateGrid.implicitHeight + pad * 2
+                    restRadius: Theme.cornerRadiusL
+
+                    Grid {
+                        id: rateGrid
+
+                        readonly property real cellWidth: root.compact ? (width - columnSpacing) / 2 : width
+
+                        width: parent.width
+                        columns: root.compact ? 2 : 1
+                        columnSpacing: Theme.spacingM
+                        rowSpacing: Theme.spacingM
+                        opacity: root.displayAuthOk ? 1 : 0.45
+
+                        RateWindow {
+                            width: rateGrid.cellWidth
+                            label: root.tr("5 hours")
+                            percent: root.displayFiveHourUtil
+                            pace: root.fiveHourPace
+                            countdown: root.displayFiveHourCountdown
+                        }
+
+                        RateWindow {
+                            width: rateGrid.cellWidth
+                            label: root.tr("7 days")
+                            percent: root.displaySevenDayUtil
+                            pace: root.sevenDayPace
+                            countdown: root.displaySevenDayCountdown
+                            baseColor: Theme.tertiary
+                            extra: {
+                                if (root.compact)
+                                    return "";
+                                var parts = [];
+                                if (root.displayWeekSessions > 0)
+                                    parts.push(root.displayWeekSessions + " " + root.tr("sessions"));
+                                if (root.displayWeekMessages > 0)
+                                    parts.push(root.displayWeekMessages + " " + root.tr("msgs"));
+                                return parts.join(" · ");
+                            }
+                        }
+                    }
+                }
+
+                // --- Token consumption ---
+                Row {
+                    id: tokenRow
+
+                    readonly property real tileWidth: (width - spacing * 2) / 3
+
+                    width: parent.width
+                    spacing: Theme.spacingS
+
+                    TokenTile {
+                        width: tokenRow.tileWidth
+                        tone: "primary"
+                        label: root.tr("Today")
+                        tokens: root.displayDailyTokens[root.todayIndex]
+                        cost: root.displayTodayCost
+                    }
+
+                    TokenTile {
+                        width: tokenRow.tileWidth
+                        tone: "secondary"
+                        label: root.tr("Week")
+                        tokens: root.displayWeekTokens
+                        cost: root.displayWeekCost
+                    }
+
+                    TokenTile {
+                        width: tokenRow.tileWidth
+                        tone: "tertiary"
+                        label: root.tr("Month")
+                        tokens: root.displayMonthTokens
+                        cost: root.displayMonthCost
+                    }
+                }
+
+                // --- Daily activity ---
+                DCard {
+                    width: parent.width
+                    height: activityColumn.implicitHeight + pad * 2
+                    restRadius: Theme.cornerRadiusL
+
+                    Column {
+                        id: activityColumn
+                        width: parent.width
+                        spacing: Theme.spacingS
 
                         Item {
                             width: parent.width
-                            height: 70
+                            height: activityTitle.implicitHeight
 
-                            Row {
-                                id: chartRow
-                                anchors.fill: parent
-                                spacing: 4
+                            StyledText {
+                                id: activityTitle
+                                text: root.tr("Daily Activity")
+                                font.pixelSize: Theme.fontSizeMedium
+                                font.weight: Theme.fontWeightMedium
+                                color: Theme.primary
+                            }
 
-                                Repeater {
-                                    model: 7
-                                    delegate: Column {
-                                        width: (chartRow.width - 6 * 4) / 7
-                                        height: chartRow.height
-                                        spacing: 2
+                            // Hovered day: total tokens, the selected profile's share, aggregate cost
+                            StyledText {
+                                anchors.right: parent.right
+                                anchors.left: activityTitle.right
+                                anchors.leftMargin: Theme.spacingS
+                                anchors.verticalCenter: parent.verticalCenter
+                                horizontalAlignment: Text.AlignRight
+                                elide: Text.ElideLeft
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.onSurfaceVariant
+                                text: {
+                                    var d = root.hoveredDay;
+                                    if (d < 0 || !(root.dailyTokens[d] > 0))
+                                        return "";
+                                    var parts = [root.formatTokens(root.dailyTokens[d])];
+                                    if (root.selectedProfile !== "all" && root.profileDailyTokens[d] > 0)
+                                        parts.push(root.formatTokens(root.profileDailyTokens[d]) + " " + root.selectedProfile);
+                                    if (root.dailyCosts[d] > 0)
+                                        parts.push(root.formatCost(root.dailyCosts[d]));
+                                    return parts.join(" · ");
+                                }
+                            }
+                        }
 
-                                        Item {
+                        Row {
+                            id: chartRow
+                            width: parent.width
+                            height: root.compact ? Theme.buttonHeightM : Theme.buttonHeightM + Theme.spacingXL
+                            spacing: Theme.spacingXS
+
+                            Repeater {
+                                model: 7
+
+                                Item {
+                                    id: day
+
+                                    required property int index
+                                    readonly property bool isToday: index === root.todayIndex
+                                    readonly property bool highlighted: index === root.hoveredDay
+                                    readonly property real barOpacity: root.hoveredDay >= 0 && !highlighted ? 0.4 : 1
+
+                                    width: (chartRow.width - chartRow.spacing * 6) / 7
+                                    height: chartRow.height
+
+                                    Item {
+                                        id: barArea
+                                        anchors.top: parent.top
+                                        anchors.bottom: dayLabel.top
+                                        anchors.bottomMargin: Theme.spacingXXS
+                                        width: parent.width
+
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            radius: Theme.cornerRadiusXS
+                                            color: Theme.withAlpha(Theme.onSurface, Theme.stateLayerHover)
+                                        }
+
+                                        Rectangle {
+                                            anchors.bottom: parent.bottom
                                             width: parent.width
-                                            height: parent.height - dayLabel.height - 2
-
-                                            // Background bar: total tokens (always shown)
-                                            Rectangle {
-                                                id: totalBar
-                                                anchors.bottom: parent.bottom
-                                                anchors.horizontalCenter: parent.horizontalCenter
-                                                width: Math.max(parent.width - 4, 4)
-                                                height: root.maxDaily > 0 ? Math.max(root.dailyTokens[index] / root.maxDaily * parent.height, root.dailyTokens[index] > 0 ? 3 : 0) : 0
-                                                radius: 2
-                                                color: root.selectedProfile === "all" ? (index === root.todayIndex ? Theme.primary : Theme.surfaceVariant) : Theme.surfaceVariant
-                                                opacity: root.hoveredDay >= 0 && index !== root.hoveredDay ? 0.4 : 1.0
-
-                                                Behavior on opacity {
-                                                    NumberAnimation {
-                                                        duration: 120
-                                                    }
-                                                }
-                                            }
-
-                                            // Overlay bar: profile tokens (shown only when a profile is selected)
-                                            Rectangle {
-                                                visible: root.selectedProfile !== "all" && root.profileDailyTokens.length > 0
-                                                anchors.bottom: parent.bottom
-                                                anchors.horizontalCenter: parent.horizontalCenter
-                                                width: Math.max(parent.width - 4, 4)
-                                                height: root.maxDaily > 0 && root.profileDailyTokens.length > index ? Math.max(root.profileDailyTokens[index] / root.maxDaily * parent.height, root.profileDailyTokens[index] > 0 ? 3 : 0) : 0
-                                                radius: 2
-                                                color: Theme.primary
-                                                opacity: root.hoveredDay >= 0 && index !== root.hoveredDay ? 0.4 : 1.0
-
-                                                Behavior on opacity {
-                                                    NumberAnimation {
-                                                        duration: 120
-                                                    }
-                                                }
-                                            }
-
-                                            MouseArea {
-                                                anchors.fill: parent
-                                                hoverEnabled: true
-                                                enabled: root.dailyTokens[index] > 0
-                                                onEntered: root.hoveredDay = index
-                                                onExited: root.hoveredDay = -1
-                                            }
+                                            height: root.barHeight(root.dailyTokens[day.index], barArea.height)
+                                            radius: Theme.cornerRadiusXS
+                                            color: root.selectedProfile === "all" && day.isToday ? Theme.primary : root.selectedProfile === "all" ? Theme.primaryContainer : Theme.surfaceVariant
+                                            opacity: day.barOpacity
                                         }
 
-                                        StyledText {
-                                            id: dayLabel
-                                            text: root.dayLabels[index]
-                                            font.pixelSize: 11
-                                            color: index === root.hoveredDay ? Theme.primary : index === root.todayIndex ? Theme.primary : Theme.surfaceVariantText
-                                            anchors.horizontalCenter: parent.horizontalCenter
+                                        Rectangle {
+                                            anchors.bottom: parent.bottom
+                                            width: parent.width
+                                            height: root.barHeight(root.profileDailyTokens[day.index], barArea.height)
+                                            visible: root.selectedProfile !== "all"
+                                            radius: Theme.cornerRadiusXS
+                                            color: Theme.primary
+                                            opacity: day.barOpacity
                                         }
+                                    }
+
+                                    StyledText {
+                                        id: dayLabel
+                                        anchors.bottom: parent.bottom
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        text: root.dayLabels[day.index]
+                                        font.pixelSize: Theme.fontSizeXSmall
+                                        font.weight: day.isToday ? Theme.fontWeightBold : Theme.fontWeight
+                                        color: day.isToday || day.highlighted ? Theme.primary : Theme.onSurfaceVariant
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        enabled: root.dailyTokens[day.index] > 0
+                                        onEntered: root.hoveredDay = day.index
+                                        onExited: root.hoveredDay = -1
                                     }
                                 }
                             }
                         }
                     }
-
-                    // Tooltip on hover — child of StyledRect to avoid clip issues
-                    Rectangle {
-                        id: chartTooltip
-                        visible: root.hoveredDay >= 0 && root.dailyTokens[root.hoveredDay] > 0
-                        z: 10
-
-                        x: {
-                            var colW = (chartRow.width - 6 * 4) / 7;
-                            var cx = root.hoveredDay * (colW + 4) + colW / 2 - width / 2;
-                            var chartX = chartRow.mapToItem(chartTooltip.parent, 0, 0).x;
-                            var raw = chartX + cx;
-                            return Math.max(Theme.spacingM, Math.min(raw, parent.width - width - Theme.spacingM));
-                        }
-                        y: {
-                            var chartY = chartRow.mapToItem(chartTooltip.parent, 0, 0).y;
-                            return chartY - height - 2;
-                        }
-
-                        width: tooltipCol.width + Theme.spacingS * 2
-                        height: tooltipCol.height + Theme.spacingXS * 2
-                        radius: 4
-                        color: Theme.surfaceContainer
-
-                        Column {
-                            id: tooltipCol
-                            anchors.centerIn: parent
-                            spacing: 1
-
-                            // Line 1: total tokens (with "total" suffix when a profile is selected)
-                            StyledText {
-                                text: {
-                                    if (root.hoveredDay < 0)
-                                        return "";
-                                    var t = root.formatTokens(root.dailyTokens[root.hoveredDay]);
-                                    return root.selectedProfile !== "all" ? t + " " + root.tr("total") : t;
-                                }
-                                font.pixelSize: 11
-                                font.weight: Font.DemiBold
-                                color: Theme.surfaceText
-                                anchors.horizontalCenter: parent.horizontalCenter
-                            }
-
-                            // Line 2: profile tokens (only when a profile is selected and has data)
-                            StyledText {
-                                visible: root.selectedProfile !== "all" && root.hoveredDay >= 0 && root.profileDailyTokens.length > root.hoveredDay && root.profileDailyTokens[root.hoveredDay] > 0
-                                text: {
-                                    if (root.hoveredDay < 0 || root.profileDailyTokens.length <= root.hoveredDay)
-                                        return "";
-                                    return root.formatTokens(root.profileDailyTokens[root.hoveredDay]) + " " + root.selectedProfile;
-                                }
-                                font.pixelSize: 11
-                                color: Theme.primary
-                                anchors.horizontalCenter: parent.horizontalCenter
-                            }
-
-                            // Line 3: total cost (always shown when > 0, uses aggregate dailyCosts)
-                            StyledText {
-                                visible: root.hoveredDay >= 0 && root.dailyCosts[root.hoveredDay] > 0
-                                text: root.hoveredDay >= 0 ? root.formatCost(root.dailyCosts[root.hoveredDay]) : ""
-                                font.pixelSize: 11
-                                color: Theme.surfaceVariantText
-                                anchors.horizontalCenter: parent.horizontalCenter
-                            }
-                        }
-                    }
                 }
 
-                // --- Model breakdown card ---
-                StyledRect {
+                // --- Models this week: share bar with a legend ---
+                DCard {
                     width: parent.width
-                    height: modelCardCol.implicitHeight + Theme.spacingM * 2
-                    color: Theme.surfaceContainerHigh
-                    visible: {
-                        if (root.selectedProfile === "all")
-                            return modelListData.count > 0;
-                        var pd = root.profileData[root.selectedProfile];
-                        return pd && pd.weekModels && pd.weekModels.length > 0;
-                    }
+                    height: modelColumn.implicitHeight + pad * 2
+                    restRadius: Theme.cornerRadiusL
+                    visible: root.displayModelTotal > 0
 
                     Column {
-                        id: modelCardCol
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingM
+                        id: modelColumn
+                        width: parent.width
                         spacing: Theme.spacingS
 
                         StyledText {
                             text: root.tr("Models This Week")
                             font.pixelSize: Theme.fontSizeMedium
-                            font.weight: Font.Medium
-                            color: Theme.surfaceText
+                            font.weight: Theme.fontWeightMedium
+                            color: Theme.primary
                         }
 
-                        Column {
-                            id: modelCol
+                        Row {
+                            id: modelBar
                             width: parent.width
-                            spacing: Theme.spacingS
+                            height: Theme.spacingS
+                            spacing: Theme.spacingXXS
+                            clip: true
 
                             Repeater {
-                                id: modelRepeater
-                                model: {
-                                    if (root.selectedProfile === "all")
-                                        return modelListData;
-                                    var pd = root.profileData[root.selectedProfile];
-                                    return (pd && pd.weekModels) ? pd.weekModels : [];
+                                model: root.displayModels
+
+                                Rectangle {
+                                    required property var modelData
+                                    required property int index
+
+                                    width: Math.max(Theme.spacingXXS, (modelBar.width - modelBar.spacing * (root.displayModels.length - 1)) * modelData.modelTokens / root.displayModelTotal)
+                                    height: modelBar.height
+                                    radius: height / 2
+                                    color: root.modelColor(index)
                                 }
-                                delegate: Column {
-                                    width: modelCol.width
-                                    spacing: 3
+                            }
+                        }
 
-                                    // When model is a ListModel, role names are direct properties.
-                                    // When model is a JS array, values are accessed via modelData.
-                                    // `real`, not `int`: a weekly per-model total passes the signed
-                                    // 32-bit range (2.1B tokens), and `int` wraps it negative.
-                                    property string _modelName: modelListData === modelRepeater.model ? modelName : (modelData ? modelData.modelName : "")
-                                    property real _modelTokens: modelListData === modelRepeater.model ? modelTokens : (modelData ? (modelData.modelTokens || 0) : 0)
+                        Flow {
+                            width: parent.width
+                            spacing: Theme.spacingM
 
-                                    Row {
-                                        width: parent.width
-                                        spacing: Theme.spacingXS
+                            Repeater {
+                                model: root.displayModels
 
-                                        StyledText {
-                                            text: root.shortModelName(_modelName)
-                                            font.pixelSize: Theme.fontSizeSmall
-                                            color: Theme.surfaceText
-                                        }
-                                        StyledText {
-                                            text: root.formatTokens(_modelTokens)
-                                            font.pixelSize: Theme.fontSizeSmall
-                                            color: Theme.surfaceVariantText
-                                        }
-                                    }
+                                Row {
+                                    required property var modelData
+                                    required property int index
+
+                                    spacing: Theme.spacingXS
 
                                     Rectangle {
-                                        width: parent.width
-                                        height: 4
-                                        radius: 2
-                                        color: Theme.surfaceVariant
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: Theme.spacingS
+                                        height: width
+                                        radius: width / 2
+                                        color: root.modelColor(index)
+                                    }
 
-                                        Rectangle {
-                                            width: root.displayWeekTokens > 0 ? parent.width * Math.min(_modelTokens / root.displayWeekTokens, 1) : 0
-                                            height: parent.height
-                                            radius: 2
-                                            color: Theme.primary
-                                        }
+                                    StyledText {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: root.shortModelName(modelData.modelName)
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        color: Theme.surfaceText
+                                    }
+
+                                    StyledText {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: root.formatTokens(modelData.modelTokens)
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        color: Theme.onSurfaceVariant
                                     }
                                 }
                             }
@@ -1609,49 +1313,32 @@ PluginComponent {
                     }
                 }
 
-                // --- All-time footer card ---
-                StyledRect {
-                    width: parent.width
-                    height: allTimeRow.implicitHeight + Theme.spacingM * 2
-                    color: Theme.surfaceContainerHigh
-                    visible: root.selectedProfile === "all" && (root.alltimeSessions > 0 || root.alltimeMessages > 0)
+                // --- All-time footer (detailed layout) ---
+                Row {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    spacing: Theme.spacingXS
+                    visible: !root.compact && root.selectedProfile === "all" && (root.alltimeSessions > 0 || root.alltimeMessages > 0)
 
-                    Row {
-                        id: allTimeRow
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingM
-                        spacing: Theme.spacingS
-
-                        DankIcon {
-                            id: allTimeIcon
-                            name: "calendar_today"
-                            size: 14
-                            color: Theme.surfaceVariantText
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-
-                        StyledText {
-                            width: Math.max(0, parent.width - allTimeIcon.width - parent.spacing)
-                            text: {
-                                var parts = [];
-                                if (root.firstSession && root.firstSession !== "unknown")
-                                    parts.push(root.tr("Since") + " " + root.firstSession);
-                                parts.push(root.alltimeSessions + " " + root.tr("sessions"));
-                                parts.push(root.alltimeMessages.toLocaleString() + " " + root.tr("msgs"));
-                                return parts.join("  ·  ");
-                            }
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: Theme.surfaceVariantText
-                            wrapMode: Text.WordWrap
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
+                    DIcon {
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: "calendar_today"
+                        size: Theme.iconSizeSmall
+                        color: Theme.onSurfaceVariant
                     }
-                }
 
-                // Bottom padding to match sides (compensates Column spacing)
-                Item {
-                    width: 1
-                    height: 1
+                    StyledText {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: {
+                            var parts = [];
+                            if (root.firstSession && root.firstSession !== "unknown")
+                                parts.push(root.tr("Since") + " " + root.firstSession);
+                            parts.push(root.alltimeSessions + " " + root.tr("sessions"));
+                            parts.push(root.alltimeMessages.toLocaleString() + " " + root.tr("msgs"));
+                            return parts.join(" · ");
+                        }
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.onSurfaceVariant
+                    }
                 }
             }
         }
