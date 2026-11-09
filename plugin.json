@@ -1,0 +1,22 @@
+{
+  "id": "claudeStats",
+  "name": "Claude Stats",
+  "description": "Monitor your Claude Code subscription usage with token tracking, estimated API costs, rate limits, and daily activity charts",
+  "version": "1.3.6",
+  "author": "Nicolas Bellamy",
+  "icon": "monitoring",
+  "type": "widget",
+  "capabilities": [
+    "dankbar-widget"
+  ],
+  "component": "./ClaudeStatsWidget.qml",
+  "settings": "./ClaudeStatsSettings.qml",
+  "requires": [
+    "jq",
+    "curl"
+  ],
+  "permissions": [
+    "settings_read",
+    "settings_write"
+  ]
+}
